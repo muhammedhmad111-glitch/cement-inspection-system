@@ -1,0 +1,274 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: userId (Firebase Auth UID)
+    // Fields:
+    //   - uid: string (required)
+    //   - email: string (required, email format)
+    //   - displayName: string (optional)
+    //   - photoURL: string (optional)
+    //   - role: string (required, 'admin' or 'client')
+    //   - createdAt: timestamp (required)
+    //
+    // Collection: products
+    // Document ID: productId
+    // Fields:
+    //   - id: string (required)
+    //   - name: string (required)
+    //   - description: string (required)
+    //   - price: number (required, positive)
+    //   - discountPrice: number (optional, positive)
+    //   - images: list (required, strings)
+    //   - category: string (required)
+    //   - stock: number (required, non-negative)
+    //   - rating: number (required, 0-5)
+    //   - reviewsCount: number (required, non-negative)
+    //   - isFeatured: bool (optional)
+    //   - isBestSeller: bool (optional)
+    //   - createdAt: timestamp (required)
+    //
+    // Collection: orders
+    // Document ID: orderId
+    // Fields:
+    //   - id: string (required)
+    //   - userId: string (optional)
+    //   - items: list (required)
+    //   - total: number (required, positive)
+    //   - status: string (required, enum)
+    //   - shippingAddress: map (required)
+    //   - paymentMethod: string (required, enum)
+    //   - createdAt: timestamp (required)
+    //
+    // Collection: products/{productId}/reviews
+    // Document ID: reviewId
+    // Fields:
+    //   - id: string (required)
+    //   - productId: string (required)
+    //   - userId: string (required)
+    //   - userName: string (required)
+    //   - rating: number (required, 1-5)
+    //   - comment: string (required)
+    //   - createdAt: timestamp (required)
+    //
+    // Collection: banners
+    // Document ID: bannerId
+    // Fields:
+    //   - id: string (required)
+    //   - title: string (required)
+    //   - subtitle: string (optional)
+    //   - image: string (required)
+    //   - link: string (optional)
+    //   - buttonText: string (optional)
+    //   - isActive: bool (required)
+    //   - type: string (required, 'hero' or 'promo')
+    //
+    // Collection: testimonials
+    // Document ID: testimonialId
+    // Fields:
+    //   - id: string (required)
+    //   - name: string (required)
+    //   - role: string (optional)
+    //   - text: string (required)
+    //   - rating: number (optional)
+    //   - isActive: bool (required)
+    //
+    // Collection: homepage_settings
+    // Document ID: settingId
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "muhammedhmad111@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function isValidUrl(url) {
+      return url is string && (url.matches("^https://.*") || url.matches("^http://.*"));
+    }
+
+    function isRecent(time) {
+      return time > request.time - duration.value(5, 'm') && time < request.time + duration.value(5, 'm');
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'email', 'role', 'createdAt']) &&
+             data.keys().hasOnly(['uid', 'email', 'displayName', 'photoURL', 'role', 'createdAt']) &&
+             data.uid == request.auth.uid &&
+             isValidEmail(data.email) &&
+             data.role in ['admin', 'client'] &&
+             data.createdAt is timestamp;
+    }
+
+    function isValidProduct(data) {
+      return data.keys().hasAll(['id', 'name', 'description', 'price', 'category', 'stock', 'rating', 'reviewsCount', 'createdAt']) &&
+             data.price is number && data.price > 0 &&
+             data.stock is number && data.stock >= 0 &&
+             data.rating is number && data.rating >= 0 && data.rating <= 5 &&
+             data.reviewsCount is number && data.reviewsCount >= 0 &&
+             data.images is list &&
+             data.createdAt is timestamp;
+    }
+
+    function isValidOrder(data) {
+      return data.keys().hasAll(['id', 'items', 'total', 'status', 'shippingAddress', 'paymentMethod', 'createdAt']) &&
+             data.total is number && data.total > 0 &&
+             data.status in ['pending', 'processing', 'shipped', 'delivered', 'cancelled'] &&
+             data.paymentMethod in ['cod', 'online'] &&
+             data.items is list && data.items.size() > 0 &&
+             data.shippingAddress is map &&
+             data.createdAt is timestamp;
+    }
+
+    function isValidReview(data) {
+      return data.keys().hasAll(['id', 'productId', 'userId', 'userName', 'rating', 'comment', 'createdAt']) &&
+             data.rating is number && data.rating >= 1 && data.rating <= 5 &&
+             data.comment is string && data.comment.size() > 0 && data.comment.size() < 1000 &&
+             data.userId == request.auth.uid &&
+             data.createdAt is timestamp;
+    }
+
+    function isValidBanner(data) {
+      return data.keys().hasAll(['id', 'title', 'image', 'isActive', 'type']) &&
+             data.title is string && data.title.size() > 0 &&
+             data.image is string &&
+             data.isActive is bool &&
+             data.type in ['hero', 'promo'];
+    }
+
+    function isValidTestimonial(data) {
+      return data.keys().hasAll(['id', 'name', 'text', 'isActive']) &&
+             data.name is string && data.name.size() > 0 &&
+             data.text is string && data.text.size() > 0 &&
+             data.isActive is bool;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isAuthenticated() && isOwner(userId) && isValidUser(request.resource.data) && (request.resource.data.role == 'client' || isAdmin());
+      allow update: if isAuthenticated() && isOwner(userId) && isValidUser(request.resource.data) && (request.resource.data.role == resource.data.role || isAdmin());
+    }
+
+    match /products/{productId} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin() && isValidProduct(request.resource.data);
+      
+      match /reviews/{reviewId} {
+        allow read: if true;
+        allow create: if isAuthenticated() && isValidReview(request.resource.data);
+        allow update, delete: if isAuthenticated() && (request.auth.uid == resource.data.userId || isAdmin()) && isValidReview(request.resource.data);
+      }
+    }
+
+    // Collection Group for reviews
+    match /{path=**}/reviews/{reviewId} {
+      allow read: if true;
+      allow delete: if isAdmin();
+    }
+
+    match /categories/{categoryId} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /settings/{settingId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /banners/{bannerId} {
+      allow read: if true;
+      allow write: if isAdmin() && isValidBanner(request.resource.data);
+    }
+
+    match /testimonials/{testimonialId} {
+      allow read: if true;
+      allow write: if isAdmin() && isValidTestimonial(request.resource.data);
+    }
+
+    match /homepage_settings/{settingId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /orders/{orderId} {
+      allow read: if isAuthenticated() && (request.auth.uid == resource.data.userId || isAdmin());
+      allow create: if isValidOrder(request.resource.data) && 
+                    (
+                      (isAuthenticated() && request.resource.data.userId == request.auth.uid) || 
+                      (!('userId' in request.resource.data))
+                    );
+      allow update: if isAdmin() && isValidOrder(request.resource.data);
+    }
+
+    // ===============================================================
+    // Inspection Management System
+    // Collections: inspection_equipment, inspection_plans, inspection_phases,
+    // inspection_parts, inspection_checklist_items, inspection_activities,
+    // inspection_task_instances
+    // Admin/inspector managed — no public read.
+    // ===============================================================
+
+    match /inspection_equipment/{id} {
+      allow read, write: if isAdmin();
+    }
+
+    match /inspection_plans/{id} {
+      allow read, write: if isAdmin();
+    }
+
+    match /inspection_phases/{id} {
+      allow read, write: if isAdmin();
+    }
+
+    match /inspection_parts/{id} {
+      allow read, write: if isAdmin();
+    }
+
+    match /inspection_checklist_items/{id} {
+      allow read, write: if isAdmin();
+    }
+
+    match /inspection_activities/{id} {
+      allow read, write: if isAdmin();
+    }
+
+    match /inspection_task_instances/{id} {
+      allow read, write: if isAdmin();
+    }
+
+    // Default deny
+    match /{path=**} {
+      allow read, write: if false;
+    }
+  }
+}
